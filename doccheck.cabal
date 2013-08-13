@@ -26,6 +26,6 @@ executable doccheck
   -- other-modules:
   other-extensions:    OverloadedStrings
   build-depends:       base >=4.6, attoparsec >=0.10, text >=0.11, ghc-paths >=0.1
-                       , directory 1.*, directory-tree >=0.11, filepath >=1.*
+                       , directory, directory-tree >=0.11, filepath, ghc >=7.6
   hs-source-dirs:      src
   default-language:    Haskell2010
