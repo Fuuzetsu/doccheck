@@ -1,3 +1,12 @@
+-- |
+-- Module      :  Documentation.DocCheck
+-- Copyright   :  (c) Mateusz Kowalczyk 2013,
+-- License     :  GPLv3
+--
+-- Maintainer  :  fuuzetsu@fuuzetsu.co.uk
+-- Stability   :  experimental
+-- Portability :  portable
+
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
@@ -49,6 +58,8 @@ docDeclToString (DocCommentPrev (HsDocString x)) = unpackFS x
 docDeclToString (DocCommentNamed _ (HsDocString x)) = unpackFS x
 docDeclToString (DocGroup _ (HsDocString x)) = unpackFS x
 
+-- | Exits with 'exitFailure' if any warnings are found or any files provided
+-- do not exist. Note that it will not exit on any parse errors.
 main :: IO ()
 main = do
   files <- getArgs
