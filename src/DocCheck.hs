@@ -6,8 +6,10 @@ import           Control.Monad
 import qualified Data.Attoparsec.Text as A
 import           Data.Text (Text, pack)
 import           DynFlags
+import           FastString (unpackFS)
 import           GHC
 import           GHC.Paths
+import           System.Directory
 import           System.Directory.Tree (AnchoredDirTree(..), DirTree(..),
                                         filterDir, readDirectoryWith,
                                         flattenDir)
@@ -30,10 +32,10 @@ extractDocs files sources = do
 
 
 docDeclToString :: DocDecl -> String
-docDeclToString (DocCommentNext (HsDocString x)) = init . tail $ show x
-docDeclToString (DocCommentPrev (HsDocString x)) = init . tail $ show x
-docDeclToString (DocCommentNamed _ (HsDocString x)) = init . tail $ show x
-docDeclToString (DocGroup _ (HsDocString x)) = init . tail $ show x
+docDeclToString (DocCommentNext (HsDocString x)) = unpackFS x
+docDeclToString (DocCommentPrev (HsDocString x)) = unpackFS x
+docDeclToString (DocCommentNamed _ (HsDocString x)) = unpackFS x
+docDeclToString (DocGroup _ (HsDocString x)) = unpackFS x
 
 
 main :: IO ()
@@ -42,7 +44,7 @@ main = do
   allFiles <- concat <$> mapM getHaskellFiles files
   sources <- mapM readFile allFiles
   foo <- runGhc (Just libdir) (extractDocs allFiles sources)
-  let issues = unlines $ findIssues foo
+  let issues = concat $ findIssues foo
   unless (null issues) (putStr issues >> exitFailure)
 
 findIssues :: [(FilePath, [String])] -> [String]
@@ -57,7 +59,8 @@ findIssues fs = filter (not . null) $ map warn fs
               ++ " :\n" ++ unlines (map formatProblems xs)
           where
             formatProblems :: (String, [String]) -> String
-            formatProblems (doc, issues) = concatMap (++ " in " ++ doc) issues
+            formatProblems (doc, issues) =
+              unlines $ map (++ " in ‘" ++ doc ++ "’") issues
 
 runParsers :: Text -> Maybe [String]
 runParsers d = case [ x | Right x <- map (`A.parseOnly` d) parsers ] of
@@ -65,14 +68,23 @@ runParsers d = case [ x | Right x <- map (`A.parseOnly` d) parsers ] of
   xs -> Just xs
   where
     parsers :: [A.Parser String]
-    parsers = [onetwothree]
+    parsers = [escapingEmph, htmlEmph]
       where
-        onetwothree = A.takeWhile (/= '1') *> "123" *> return "123 found!"
+        escapingEmph = A.takeWhile (/= '/') *> "/"
+                       *> A.takeWhile (`notElem` "\n\\/") *> "\\"
+                       *> return ("attempting to escape a character "
+                                  ++ "inside of emphasis")
+        htmlEmph = A.takeWhile (/= '/') *> "/"
+                   *> A.takeWhile (`notElem` "\n&/") *> "&#"
+                   *> return "HTML sequence inside of emphasis"
+
 
 getHaskellFiles :: FilePath -> IO [FilePath]
 getHaskellFiles s = do
-    _:/tree <- readDirectoryWith return s
-    return $ map flattenFiles $ filter f $ flattenDir $ filterDir myPred tree
+  exists <- liftM2 (||) (doesFileExist s) (doesDirectoryExist s)
+  unless exists $ putStrLn ("no such file or directory: " ++ s) >> exitFailure
+  _:/tree <- readDirectoryWith return s
+  return $ map flattenFiles $ filter f $ flattenDir $ filterDir myPred tree
   where
     myPred (Dir ('.':_) _) = False
     myPred (File n _) = e == ".hs" || e == ".lhs"
