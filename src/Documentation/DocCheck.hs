@@ -8,7 +8,7 @@
 -- Portability :  portable
 
 {-# LANGUAGE OverloadedStrings #-}
-module Main where
+module Documentation.DocCheck where
 
 import           Bag (bagToList)
 import           Control.Applicative ((*>), (<$>))
@@ -17,16 +17,14 @@ import qualified Data.Attoparsec.Text as A (takeWhile, Parser, parseOnly)
 import           Data.Text (Text, pack)
 import           DynFlags (DynFlag(Opt_Haddock), getDynFlags, dopt_set)
 import           FastString (unpackFS)
-import           GHC (Ghc, runGhc, HsDocString(..), DocDecl(..), HsDecl(..),
+import           GHC (Ghc, HsDocString(..), DocDecl(..), HsDecl(..),
                       GenLocated(L), hsmodDecls, parser)
-import           GHC.Paths (libdir)
 import           System.Directory (doesFileExist, doesDirectoryExist)
 import           System.Directory.Tree (AnchoredDirTree(..), DirTree(..),
                                         filterDir, readDirectoryWith,
                                         flattenDir)
-import           System.Environment (getArgs)
-import           System.Exit (exitFailure, exitSuccess)
 import           System.FilePath (takeExtension)
+import           System.Exit (exitFailure)
 
 -- | Extracts Haddock documentation from all the files provided. Note that any
 -- modules that fail to parse will be reported as such. Note that the program
@@ -58,28 +56,6 @@ docDeclToString (DocCommentPrev (HsDocString x)) = unpackFS x
 docDeclToString (DocCommentNamed _ (HsDocString x)) = unpackFS x
 docDeclToString (DocGroup _ (HsDocString x)) = unpackFS x
 
--- | Exits with 'exitFailure' if any warnings are found or any files provided
--- do not exist. Note that it will not exit on any parse errors.
-main :: IO ()
-main = do
-  files <- parseArgs
-  allFiles <- concat <$> mapM getHaskellFiles files
-  sources <- mapM readFile allFiles
-  (fs, ps) <- runGhc (Just libdir) (extractDocs $ zip allFiles sources)
-  let issues = concat $ findIssues ps
-  unless (null fs) (putStrLn $ "Following files failed to parse:\n"
-                    ++ unlines (map (\(f, m) -> f ++ " - " ++ m) fs))
-  unless (null issues) (putStr issues >> exitFailure)
-
--- | Reports usage if it sees @-h@ as the first argument, otherwise treats any
--- input as files.
-parseArgs :: IO [String]
-parseArgs = do
-  args <- getArgs
-  case args of
-    "-h":_ -> putStrLn "usage: doccheck [-h] [file1 ...]" >> exitSuccess
-    xs -> return xs
-
 -- | Finds potential problems for each comment in each file and
 -- formats the warning messages.
 findIssues :: [(FilePath, [String])] -> [String]
@@ -100,7 +76,7 @@ findIssues fs = filter (not . null) $ map warn fs
 -- | Runs multiple parsers on each of the strings and collects results of any
 -- parsers that succeed. Note that these results will are used as the warning
 -- messages so each parser should be in form of
--- @p = someParsing *> return "warning message for this parser"@
+-- @p = someParsing *> return \\"warning message for this parser\\"@
 runParsers :: Text -> Maybe [String]
 runParsers d = case [ x | Right x <- map (`A.parseOnly` d) parsers ] of
   [] -> Nothing
