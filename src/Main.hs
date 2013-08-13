@@ -1,3 +1,4 @@
+{-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Copyright   :  (c) Mateusz Kowalczyk 2013,
 -- License     :  GPLv3
