@@ -71,11 +71,13 @@ main = do
                     ++ unlines (map (\(f, m) -> f ++ " - " ++ m) fs))
   unless (null issues) (putStr issues >> exitFailure)
 
+-- | Reports usage if it sees @-h@ as the first argument, otherwise treats any
+-- input as files.
 parseArgs :: IO [String]
 parseArgs = do
   args <- getArgs
   case args of
-    ("-h":_) -> putStrLn "usage: doccheck [-h] [file1 ...]" >> exitSuccess
+    "-h":_ -> putStrLn "usage: doccheck [-h] [file1 ...]" >> exitSuccess
     xs -> return xs
 
 -- | Finds potential problems for each comment in each file and
