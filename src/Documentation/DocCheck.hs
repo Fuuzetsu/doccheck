@@ -1,6 +1,6 @@
 -- |
 -- Module      :  Documentation.DocCheck
--- Copyright   :  (c) Mateusz Kowalczyk 2013,
+-- Copyright   :  (c) Mateusz Kowalczyk 2013
 -- License     :  GPLv3
 --
 -- Maintainer  :  fuuzetsu@fuuzetsu.co.uk
@@ -11,10 +11,12 @@
 module Documentation.DocCheck where
 
 import           Bag (bagToList)
-import           Control.Applicative ((*>), (<$>))
+import           Control.Applicative ((<$>), (*>))
 import           Control.Monad (unless, liftM2)
-import qualified Data.Attoparsec.Text as A (takeWhile, Parser, parseOnly)
+import qualified Data.Attoparsec.Text as A (Parser, parseOnly)
 import           Data.Text (Text, pack)
+import           Documentation.DocCheck.Parsers (htmlEmph, escapingEmph,
+                                                 WarningParser(..))
 import           DynFlags (DynFlag(Opt_Haddock), getDynFlags, dopt_set)
 import           FastString (unpackFS)
 import           GHC (Ghc, HsDocString(..), DocDecl(..), HsDecl(..),
@@ -64,34 +66,31 @@ findIssues fs = filter (not . null) $ map warn fs
     warn :: (FilePath, [String]) -> String
     warn (p, docs) =
       case [ (d, x) |
-             (d, Just x) <- map (\d' -> (d', runParsers $ pack d')) docs ] of
+             (d, Just x) <- [(d', runParsers (pack d') ps) | d' <- docs] ] of
         [] -> []
         xs -> "Potential problems in " ++ p
               ++ " :\n" ++ unlines (map formatProblems xs)
-          where
-            formatProblems :: (String, [String]) -> String
-            formatProblems (doc, issues) =
-              unlines $ map (++ " in ‘" ++ doc ++ "’") issues
+      where
+        formatProblems :: (String, [String]) -> String
+        formatProblems (doc, issues) =
+          unlines $ map (++ " in ‘" ++ doc ++ "’") issues
+
+        ps :: [WarningParser]
+        ps = [htmlEmph, escapingEmph]
 
 -- | Runs multiple parsers on each of the strings and collects results of any
 -- parsers that succeed. Note that these results will are used as the warning
 -- messages so each parser should be in form of
 -- @p = someParsing *> return \\"warning message for this parser\\"@
-runParsers :: Text -> Maybe [String]
-runParsers d = case [ x | Right x <- map (`A.parseOnly` d) parsers ] of
+runParsers :: Text -- ^ Docstring to run on
+              -> [WarningParser] -- ^ Parsers to run on the docstring
+              -> Maybe [String] -- ^ List of warning messages
+runParsers d parsers = case [ x | Right x <- map (`A.parseOnly` d) ps ] of
   [] -> Nothing
   xs -> Just xs
   where
-    parsers :: [A.Parser String]
-    parsers = [escapingEmph, htmlEmph]
-      where
-        escapingEmph = A.takeWhile (/= '/') *> "/"
-                       *> A.takeWhile (`notElem` "\n\\/") *> "\\"
-                       *> return ("attempting to escape a character "
-                                  ++ "inside of emphasis")
-        htmlEmph = A.takeWhile (/= '/') *> "/"
-                   *> A.takeWhile (`notElem` "\n&/") *> "&#"
-                   *> return "HTML sequence inside of emphasis"
+    ps :: [A.Parser String]
+    ps = [ p *> return s | WarningParser p s <- parsers ]
 
 -- | Walks the file system looking for Haskell source files, starting from the
 -- given file.
