@@ -1,55 +1,40 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import Control.Monad
-import GHC.Paths
-import GHC
-import Lexer
-
-import Data.Traversable (traverse)
-import System.Directory.Tree (AnchoredDirTree(..), DirTree(..),
-                              filterDir, readDirectoryWith, flattenDir)
-import SrcLoc
-import StringBuffer
-import System.FilePath (takeExtension)
-
-import Debug.Trace
-import System.FilePath
-import Control.Applicative
-import System.Environment
-import System.Directory
-import Data.Attoparsec.Text
-import Data.Text (pack)
-import FastString
-import DynFlags
-import HsDecls
+import           Control.Applicative
+import           Control.Monad
 import qualified Data.Attoparsec.Text as A
-import Data.Text (pack, Text(..))
-import System.Exit
+import           Data.Text (Text, pack)
+import           DynFlags
+import           GHC
+import           GHC.Paths
+import           System.Directory.Tree (AnchoredDirTree(..), DirTree(..),
+                                        filterDir, readDirectoryWith,
+                                        flattenDir)
+import           System.Environment
+import           System.Exit
+import           System.FilePath
 
 
 extractDocs :: [FilePath] -> [String] -> Ghc [(FilePath, [String])]
 extractDocs files sources = do
-  dflags <- flip dopt_set Opt_Haddock <$> getDynFlags
-  let psed = map (\(f, s) -> (f, parser s dflags f)) (zip files sources)
-      hsm = [ (f, hsmodDecls x)  | (f, Right (_, L _ x)) <- psed ]
-      extract (f, ls) = (f, [ x | (L _ x) <- ls ])
-      extract' (f, ls) = (f, [ x | (DocD x) <- ls ])
-      extract'' (f, ls) = (f, map docDeclToString ls)
-      docDeclToString (DocCommentNext (HsDocString x)) = init . tail $ show x
-      docDeclToString (DocCommentPrev (HsDocString x)) = init . tail $ show x
-      docDeclToString (DocCommentNamed _ (HsDocString x)) = init . tail $ show x
-      docDeclToString (DocGroup _ (HsDocString x)) = init . tail $ show x
-      decls = map extract hsm :: [(FilePath, [HsDecl RdrName])]
-      docsDecl = map extract' decls :: [(FilePath, [DocDecl])]
-      docs = map extract'' docsDecl
-  return docs
+  dflags' <- flip dopt_set Opt_Haddock <$> getDynFlags
+  let psed = map (\(f, s) -> (f, parser s dflags' f)) (zip files sources)
+  return $ map stripLoc $ rightLocs psed
+  where
+    -- Pull out module declarations from successful parses, drop location
+    rightLocs xs = [ (f, hsmodDecls x)  | (f, Right (_, L _ x)) <- xs ]
 
-test = do
-  let f = "/tmp/Test.hs"
-  s <- readFile f
-  foo <- runGhc (Just libdir) (extractDocs [f] [s])
-  return foo
+    -- Get out Haddock comment strings from amongst other module declarations
+    stripLoc (f, ls) = (f, [ docDeclToString x | (L _ (DocD x)) <- ls ])
+
+
+docDeclToString :: DocDecl -> String
+docDeclToString (DocCommentNext (HsDocString x)) = init . tail $ show x
+docDeclToString (DocCommentPrev (HsDocString x)) = init . tail $ show x
+docDeclToString (DocCommentNamed _ (HsDocString x)) = init . tail $ show x
+docDeclToString (DocGroup _ (HsDocString x)) = init . tail $ show x
+
 
 main :: IO ()
 main = do
@@ -58,7 +43,7 @@ main = do
   sources <- mapM readFile allFiles
   foo <- runGhc (Just libdir) (extractDocs allFiles sources)
   let issues = unlines $ findIssues foo
-  when (not $ null issues) (putStr issues >> exitFailure)
+  unless (null issues) (putStr issues >> exitFailure)
 
 findIssues :: [(FilePath, [String])] -> [String]
 findIssues fs = filter (not . null) $ map warn fs
@@ -69,21 +54,22 @@ findIssues fs = filter (not . null) $ map warn fs
              (d, Just x) <- map (\d' -> (d', runParsers $ pack d')) docs ] of
         [] -> []
         xs -> "Potential problems in " ++ p
-              ++ " :\n" ++ (unlines $ map formatProblems xs)
+              ++ " :\n" ++ unlines (map formatProblems xs)
           where
             formatProblems :: (String, [String]) -> String
-            formatProblems (doc, issues) = concat $ map (++ " in " ++ doc) issues
+            formatProblems (doc, issues) = concatMap (++ " in " ++ doc) issues
 
 runParsers :: Text -> Maybe [String]
-runParsers d = case [ x | Right x <- map (flip parseOnly d) parsers ] of
+runParsers d = case [ x | Right x <- map (`A.parseOnly` d) parsers ] of
   [] -> Nothing
   xs -> Just xs
   where
-    parsers :: [Parser String]
+    parsers :: [A.Parser String]
     parsers = [onetwothree]
       where
         onetwothree = A.takeWhile (/= '1') *> "123" *> return "123 found!"
 
+getHaskellFiles :: FilePath -> IO [FilePath]
 getHaskellFiles s = do
     _:/tree <- readDirectoryWith return s
     return $ map flattenFiles $ filter f $ flattenDir $ filterDir myPred tree
