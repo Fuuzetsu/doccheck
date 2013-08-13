@@ -1,126 +1,100 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import GHC (renamedSource, emptyRnGroup)
-import Name (Name)
-import HsDecls (HsGroup, LHsDecl)
-
-import qualified Data.Map as M
-import Data.Map (Map)
-import Data.List
-import Data.Maybe
-import Data.Monoid
-import Data.Ord
-import Control.Applicative
-import Control.DeepSeq
 import Control.Monad
-import qualified Data.Traversable as T
-
-import qualified Packages
-import qualified Module
-import qualified SrcLoc
+import GHC.Paths
 import GHC
-import HscTypes
-import Name
-import Bag
-import RdrName
-import TcRnTypes
-import FastString (unpackFS, concatFS)
+import Lexer
+
+import Data.Traversable (traverse)
+import System.Directory.Tree (AnchoredDirTree(..), DirTree(..),
+                              filterDir, readDirectoryWith, flattenDir)
+import SrcLoc
+import StringBuffer
+import System.FilePath (takeExtension)
+
+import Debug.Trace
+import System.FilePath
+import Control.Applicative
+import System.Environment
+import System.Directory
+import Data.Attoparsec.Text
+import Data.Text (pack)
+import FastString
+import DynFlags
+import HsDecls
+import qualified Data.Attoparsec.Text as A
+import Data.Text (pack, Text(..))
+import System.Exit
 
 
-data Hole = Hole
+extractDocs :: [FilePath] -> [String] -> Ghc [(FilePath, [String])]
+extractDocs files sources = do
+  dflags <- flip dopt_set Opt_Haddock <$> getDynFlags
+  let psed = map (\(f, s) -> (f, parser s dflags f)) (zip files sources)
+      hsm = [ (f, hsmodDecls x)  | (f, Right (_, L _ x)) <- psed ]
+      extract (f, ls) = (f, [ x | (L _ x) <- ls ])
+      extract' (f, ls) = (f, [ x | (DocD x) <- ls ])
+      extract'' (f, ls) = (f, map docDeclToString ls)
+      docDeclToString (DocCommentNext (HsDocString x)) = init . tail $ show x
+      docDeclToString (DocCommentPrev (HsDocString x)) = init . tail $ show x
+      docDeclToString (DocCommentNamed _ (HsDocString x)) = init . tail $ show x
+      docDeclToString (DocGroup _ (HsDocString x)) = init . tail $ show x
+      decls = map extract hsm :: [(FilePath, [HsDecl RdrName])]
+      docsDecl = map extract' decls :: [(FilePath, [DocDecl])]
+      docs = map extract'' docsDecl
+  return docs
 
-analyseDocs tm = do
-  group <- case renamedSource tm of
-    Nothing -> do
-      return emptyRnGroup
-    Just (x, _, _, _) -> return x
-  let (docs, _) = unzip $ topDecls group
-  return (group :: HsGroup Name)
-
--- | The top-level declarations of a module that we care about,
--- ordered by source location, with documentation attached if it exists.
-topDecls :: HsGroup Name -> [(LHsDecl Name, [HsDocString])]
-topDecls = filterClasses . filterDecls . collectDocs . sortByLoc . ungroup
-
--- | Collect docs and attach them to the right declarations.
-collectDocs :: [LHsDecl a] -> [(LHsDecl a, [HsDocString])]
-collectDocs = go Nothing []
-  where
-    go Nothing _ [] = []
-    go (Just prev) docs [] = finished prev docs []
-    go prev docs (L _ (DocD (DocCommentNext str)) : ds)
-      | Nothing <- prev = go Nothing (str:docs) ds
-      | Just decl <- prev = finished decl docs (go Nothing [str] ds)
-    go prev docs (L _ (DocD (DocCommentPrev str)) : ds) = go prev (str:docs) ds
-    go Nothing docs (d:ds) = go (Just d) docs ds
-    go (Just prev) docs (d:ds) = finished prev docs (go (Just d) [] ds)
-
-    finished decl docs rest = (decl, reverse docs) : rest
-
-
--- | Sort by source location
-sortByLoc :: [Located a] -> [Located a]
-sortByLoc = sortBy (comparing getLoc)
-
--- | Go through all class declarations and filter their sub-declarations
-filterClasses :: [(LHsDecl a, doc)] -> [(LHsDecl a, doc)]
-filterClasses decls = [ if isClassD d then (L loc (filterClass d), doc) else x
-                      | x@(L loc d, doc) <- decls ]
-  where
-    filterClass (TyClD c) =
-      TyClD $ c { tcdSigs = filter isVanillaLSig $ tcdSigs c }
-    filterClass _ = error "expected TyClD"
-
--- | Filter out declarations that we don't handle in Haddock
-filterDecls :: [(LHsDecl a, doc)] -> [(LHsDecl a, doc)]
-filterDecls = filter (isHandled . unL . fst)
-  where
-    isHandled (ForD (ForeignImport {})) = True
-    isHandled (TyClD {}) = True
-    isHandled (InstD {}) = True
-    isHandled (SigD d) = isVanillaLSig (reL d)
-    isHandled (ValD _) = True
-    -- we keep doc declarations to be able to get at named docs
-    isHandled (DocD _) = True
-    isHandled _ = False
-
-
--- | Take all declarations except pragmas, infix decls, rules from an 'HsGroup'.
-ungroup :: HsGroup Name -> [LHsDecl Name]
-ungroup group_ =
-  mkDecls (concat   . hs_tyclds) TyClD  group_ ++
-  mkDecls hs_derivds             DerivD group_ ++
-  mkDecls hs_defds               DefD   group_ ++
-  mkDecls hs_fords               ForD   group_ ++
-  mkDecls hs_docs                DocD   group_ ++
-  mkDecls hs_instds              InstD  group_ ++
-  mkDecls (typesigs . hs_valds)  SigD   group_ ++
-  mkDecls (valbinds . hs_valds)  ValD   group_
-  where
-    typesigs (ValBindsOut _ sigs) = filter isVanillaLSig sigs
-    typesigs _ = error "expected ValBindsOut"
-
-    valbinds (ValBindsOut binds _) = concatMap bagToList . snd . unzip $ binds
-    valbinds _ = error "expected ValBindsOut"
-
-
--- | Take a field of declarations from a data structure and create HsDecls
--- using the given constructor
-mkDecls :: (a -> [Located b]) -> (b -> c) -> a -> [Located c]
-mkDecls field con struct = [ L loc (con decl) | L loc decl <- field struct ]
-
-unL :: Located a -> a
-unL (L _ x) = x
-
-
-reL :: a -> Located a
-reL = L undefined
-
-isClassD :: HsDecl a -> Bool
-isClassD (TyClD d) = isClassDecl d
-isClassD _ = False
-
-
+test = do
+  let f = "/tmp/Test.hs"
+  s <- readFile f
+  foo <- runGhc (Just libdir) (extractDocs [f] [s])
+  return foo
 
 main :: IO ()
-main = return ()
+main = do
+  files <- getArgs
+  allFiles <- concat <$> mapM getHaskellFiles files
+  sources <- mapM readFile allFiles
+  foo <- runGhc (Just libdir) (extractDocs allFiles sources)
+  let issues = unlines $ findIssues foo
+  when (not $ null issues) (putStr issues >> exitFailure)
+
+findIssues :: [(FilePath, [String])] -> [String]
+findIssues fs = filter (not . null) $ map warn fs
+  where
+    warn :: (FilePath, [String]) -> String
+    warn (p, docs) =
+      case [ (d, x) |
+             (d, Just x) <- map (\d' -> (d', runParsers $ pack d')) docs ] of
+        [] -> []
+        xs -> "Potential problems in " ++ p
+              ++ " :\n" ++ (unlines $ map formatProblems xs)
+          where
+            formatProblems :: (String, [String]) -> String
+            formatProblems (doc, issues) = concat $ map (++ " in " ++ doc) issues
+
+runParsers :: Text -> Maybe [String]
+runParsers d = case [ x | Right x <- map (flip parseOnly d) parsers ] of
+  [] -> Nothing
+  xs -> Just xs
+  where
+    parsers :: [Parser String]
+    parsers = [onetwothree]
+      where
+        onetwothree = A.takeWhile (/= '1') *> "123" *> return "123 found!"
+
+getHaskellFiles s = do
+    _:/tree <- readDirectoryWith return s
+    return $ map flattenFiles $ filter f $ flattenDir $ filterDir myPred tree
+  where
+    myPred (Dir ('.':_) _) = False
+    myPred (File n _) = e == ".hs" || e == ".lhs"
+      where e = takeExtension n
+    myPred _ = True
+
+    f (File _ _) = True
+    f _ = False
+
+    flattenFiles (File _ path) = path
+    flattenFiles x = error $ "Got non-file into flattenFiles: " ++ show x
