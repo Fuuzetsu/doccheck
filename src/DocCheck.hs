@@ -1,52 +1,67 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import           Control.Applicative
-import           Control.Monad
-import qualified Data.Attoparsec.Text as A
+import           Bag (bagToList)
+import           Control.Applicative ((*>), (<$>))
+import           Control.Monad (unless, liftM2)
+import qualified Data.Attoparsec.Text as A (takeWhile, Parser, parseOnly)
 import           Data.Text (Text, pack)
-import           DynFlags
+import           DynFlags (DynFlag(Opt_Haddock), getDynFlags, dopt_set)
 import           FastString (unpackFS)
-import           GHC
-import           GHC.Paths
-import           System.Directory
+import           GHC (Ghc, runGhc, HsDocString(..), DocDecl(..), HsDecl(..),
+                      GenLocated(L), hsmodDecls, parser)
+import           GHC.Paths (libdir)
+import           System.Directory (doesFileExist, doesDirectoryExist)
 import           System.Directory.Tree (AnchoredDirTree(..), DirTree(..),
                                         filterDir, readDirectoryWith,
                                         flattenDir)
-import           System.Environment
-import           System.Exit
-import           System.FilePath
+import           System.Environment (getArgs)
+import           System.Exit (exitFailure)
+import           System.FilePath (takeExtension)
 
-
-extractDocs :: [FilePath] -> [String] -> Ghc [(FilePath, [String])]
-extractDocs files sources = do
+-- | Extracts Haddock documentation from all the files provided. Note that any
+-- modules that fail to parse will be reported as such. Note that the program
+-- will still exit succesfully even if some files don't parse but no potential
+-- warnings are found in regards to documentation.
+extractDocs
+  :: [(FilePath, String)] -- ^ Files and their sources to extract the docs from
+     -> Ghc ([(FilePath, String)], [(FilePath, [String])])
+extractDocs files = do
   dflags' <- flip dopt_set Opt_Haddock <$> getDynFlags
-  let psed = map (\(f, s) -> (f, parser s dflags' f)) (zip files sources)
-  return $ map stripLoc $ rightLocs psed
+  let psed = map (\(f, s) -> (f, parser s dflags' f)) files
+  return (failedParses psed, map stripLoc $ rightLocs psed)
   where
+    -- Determine which modules failed to parse
+    failedParses xs = [ (f, show $ bagToList m) | (f, Left m) <- xs ]
+
+
     -- Pull out module declarations from successful parses, drop location
-    rightLocs xs = [ (f, hsmodDecls x)  | (f, Right (_, L _ x)) <- xs ]
+    rightLocs xs = [ (f, hsmodDecls x) | (f, Right (_, L _ x)) <- xs ]
 
     -- Get out Haddock comment strings from amongst other module declarations
     stripLoc (f, ls) = (f, [ docDeclToString x | (L _ (DocD x)) <- ls ])
 
-
+-- | Extracts a 'String' from 'DocDecl's by unpacking the 'FastString's
+-- with 'unpackFs' packed in the 'HsDocString' data type.
 docDeclToString :: DocDecl -> String
 docDeclToString (DocCommentNext (HsDocString x)) = unpackFS x
 docDeclToString (DocCommentPrev (HsDocString x)) = unpackFS x
 docDeclToString (DocCommentNamed _ (HsDocString x)) = unpackFS x
 docDeclToString (DocGroup _ (HsDocString x)) = unpackFS x
 
-
 main :: IO ()
 main = do
   files <- getArgs
   allFiles <- concat <$> mapM getHaskellFiles files
   sources <- mapM readFile allFiles
-  foo <- runGhc (Just libdir) (extractDocs allFiles sources)
-  let issues = concat $ findIssues foo
+  (fs, ps) <- runGhc (Just libdir) (extractDocs $ zip allFiles sources)
+  let issues = concat $ findIssues ps
+  unless (null fs) (putStrLn $ "Following files failed to parse:\n"
+                    ++ unlines (map (\(f, m) -> f ++ " - " ++ m) fs))
   unless (null issues) (putStr issues >> exitFailure)
 
+-- | Finds potential problems for each comment in each file and
+-- formats the warning messages.
 findIssues :: [(FilePath, [String])] -> [String]
 findIssues fs = filter (not . null) $ map warn fs
   where
@@ -62,6 +77,10 @@ findIssues fs = filter (not . null) $ map warn fs
             formatProblems (doc, issues) =
               unlines $ map (++ " in ‘" ++ doc ++ "’") issues
 
+-- | Runs multiple parsers on each of the strings and collects results of any
+-- parsers that succeed. Note that these results will are used as the warning
+-- messages so each parser should be in form of
+-- @p = someParsing *> return "warning message for this parser"@
 runParsers :: Text -> Maybe [String]
 runParsers d = case [ x | Right x <- map (`A.parseOnly` d) parsers ] of
   [] -> Nothing
@@ -78,7 +97,8 @@ runParsers d = case [ x | Right x <- map (`A.parseOnly` d) parsers ] of
                    *> A.takeWhile (`notElem` "\n&/") *> "&#"
                    *> return "HTML sequence inside of emphasis"
 
-
+-- | Walks the file system looking for Haskell source files, starting from the
+-- given file.
 getHaskellFiles :: FilePath -> IO [FilePath]
 getHaskellFiles s = do
   exists <- liftM2 (||) (doesFileExist s) (doesDirectoryExist s)
