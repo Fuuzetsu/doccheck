@@ -25,7 +25,7 @@ import           System.Directory.Tree (AnchoredDirTree(..), DirTree(..),
                                         filterDir, readDirectoryWith,
                                         flattenDir)
 import           System.Environment (getArgs)
-import           System.Exit (exitFailure)
+import           System.Exit (exitFailure, exitSuccess)
 import           System.FilePath (takeExtension)
 
 -- | Extracts Haddock documentation from all the files provided. Note that any
@@ -62,7 +62,7 @@ docDeclToString (DocGroup _ (HsDocString x)) = unpackFS x
 -- do not exist. Note that it will not exit on any parse errors.
 main :: IO ()
 main = do
-  files <- getArgs
+  files <- parseArgs
   allFiles <- concat <$> mapM getHaskellFiles files
   sources <- mapM readFile allFiles
   (fs, ps) <- runGhc (Just libdir) (extractDocs $ zip allFiles sources)
@@ -70,6 +70,13 @@ main = do
   unless (null fs) (putStrLn $ "Following files failed to parse:\n"
                     ++ unlines (map (\(f, m) -> f ++ " - " ++ m) fs))
   unless (null issues) (putStr issues >> exitFailure)
+
+parseArgs :: IO [String]
+parseArgs = do
+  args <- getArgs
+  case args of
+    ("-h":_) -> putStrLn "usage: doccheck [-h] [file1 ...]" >> exitSuccess
+    xs -> return xs
 
 -- | Finds potential problems for each comment in each file and
 -- formats the warning messages.
