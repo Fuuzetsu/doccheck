@@ -16,8 +16,9 @@ import           Control.Monad (unless, liftM2)
 import qualified Data.Attoparsec.Text as A (Parser, parseOnly)
 import           Data.Text (Text, pack)
 import           Documentation.DocCheck.Parsers (htmlEmph, escapingEmph,
-                                                 WarningParser(..))
-import           DynFlags (DynFlag(Opt_Haddock), getDynFlags, dopt_set)
+                                                 WarningParser(..), boldAddition)
+import           DynFlags (DynFlag(Opt_Haddock),
+                           getDynFlags, dopt_set)
 import           FastString (unpackFS)
 import           GHC (Ghc, HsDocString(..), DocDecl(..), HsDecl(..),
                       GenLocated(L), hsmodDecls, parser)
@@ -36,8 +37,9 @@ extractDocs
   :: [(FilePath, String)] -- ^ Files and their sources to extract the docs from
      -> Ghc ([(FilePath, String)], [(FilePath, [String])])
 extractDocs files = do
-  dflags' <- flip dopt_set Opt_Haddock <$> getDynFlags
-  let psed = map (\(f, s) -> (f, parser s dflags' f)) files
+  df' <- getDynFlags
+  let dflags' = foldl dopt_set df' [Opt_Haddock]
+      psed = map (\(f, s) -> (f, parser s dflags' f)) files
   return (failedParses psed, map stripLoc $ rightLocs psed)
   where
     -- Determine which modules failed to parse
@@ -76,7 +78,7 @@ findIssues fs = filter (not . null) $ map warn fs
           unlines $ map (++ " in ‘" ++ doc ++ "’") issues
 
         ps :: [WarningParser]
-        ps = [htmlEmph, escapingEmph]
+        ps = [htmlEmph, escapingEmph, boldAddition]
 
 -- | Runs multiple parsers on each of the strings and collects results of any
 -- parsers that succeed. Note that these results will are used as the warning

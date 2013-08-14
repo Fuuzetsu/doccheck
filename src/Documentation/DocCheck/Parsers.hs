@@ -9,7 +9,8 @@
 
 {-# LANGUAGE OverloadedStrings, ExistentialQuantification #-}
 module Documentation.DocCheck.Parsers
-    (escapingEmph, htmlEmph, WarningMessage, WarningParser(..), skipUntil)
+    (escapingEmph, htmlEmph, WarningMessage, WarningParser(..), skipUntil,
+     boldAddition)
     where
 
 import           Control.Applicative ((*>), some, empty, many, (<|>), (<*))
@@ -34,6 +35,15 @@ escapingEmph = WarningParser emphEscape'
 htmlEmph :: WarningParser
 htmlEmph = WarningParser htmlEmph'
            "HTML sequence inside of emphasis"
+
+-- | Finds any text that would now be rendered in bold.
+boldAddition :: WarningParser
+boldAddition = WarningParser boldAddition'
+               "Text between __ is going to be bold"
+
+boldAddition' :: A.Parser [Text]
+boldAddition' = getBlocks "__" "__"
+
 
 htmlEmph' :: A.Parser ()
 htmlEmph' = do
