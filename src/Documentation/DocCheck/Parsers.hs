@@ -14,7 +14,7 @@ module Documentation.DocCheck.Parsers
 
 import           Control.Applicative ((*>), some, empty, many, (<|>), (<*))
 import qualified Data.Attoparsec.Text as A
-import           Data.Text           (Text, head, cons)
+import           Data.Text           (Text, head, cons, any, isInfixOf)
 
 type Parser = A.Parser
 
@@ -27,7 +27,7 @@ data WarningParser = forall a. WarningParser (A.Parser a) WarningMessage
 
 -- | Looks for the escape character inside of emphasis pairs
 escapingEmph :: WarningParser
-escapingEmph = WarningParser emphBlock'
+escapingEmph = WarningParser emphEscape'
              "escape inside of emphasis"
 
 -- | HTML escape sequence inside of emphasis.
@@ -35,20 +35,19 @@ htmlEmph :: WarningParser
 htmlEmph = WarningParser htmlEmph'
            "HTML sequence inside of emphasis"
 
-escapingEmph' :: A.Parser Text
-escapingEmph' = A.takeWhile (/= '/') *> "/"
-                *> A.takeWhile (`notElem` "\n\\/") *> "\\"
+htmlEmph' :: A.Parser ()
+htmlEmph' = do
+  bs <- getBlocks "/" "/"
+  if or $ map ("&#" `Data.Text.isInfixOf`) bs
+    then return ()
+    else fail "all clean"
 
-emphBlock' :: A.Parser Char
-emphBlock' = A.takeWhile (/= '/') *> block *> A.anyChar
-  where
-    block = A.scan False p
-      where
-        p inside c
-          | c == '/' = Just (not inside)
-          | c == '\n' = Just False
-          | c == '\\' && inside = Nothing
-          | otherwise = Just inside
+emphEscape' :: A.Parser ()
+emphEscape' = do
+  bs <- getBlocks "/" "/"
+  if or $ map (Data.Text.any (== '\\')) bs
+    then return ()
+    else fail "all clean"
 
 -- | Returns sections of text delimited by specified text.
 -- getBlocks :: Text -> Text -> Parser [Text]
@@ -77,7 +76,3 @@ skipUntil c = A.char '\\' *> A.anyChar *> skipUntil c -- honour escapes
       case x of
         Nothing -> fail "eof"
         Just x' -> if x' == c then return () else fail "not goal"
-
-htmlEmph' :: A.Parser Text
-htmlEmph' = A.takeWhile (/= '/') *> "/"
-            *> A.takeWhile (`notElem` "\n&/") *> "&#"
